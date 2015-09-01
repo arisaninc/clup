@@ -1,0 +1,27 @@
+{
+  "name": "@arisan/cup",
+  "version": "0.0.3",
+  "description": "A command line utility to deploy clio to various IaaS",
+  "bin": {
+    "cup": "./bin/cup"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@gitlab.com/arisan/clio-up.git"
+  },
+  "author": "David T.",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://gitlab.com/arisan/clio-up/issues"
+  },
+  "homepage": "https://gitlab.com/arisan/clio-up#README",
+  "dependencies": {
+    "aws-sdk": "^2.1.49",
+    "colors": "^1.1.2",
+    "commander": "^2.8.1",
+    "mongodb": "^2.0.42"
+  }
+}
