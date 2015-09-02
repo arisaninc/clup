@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+
+var awssdk    = require('aws-sdk');
+var colors    = require('colors');
+var commander = require('commander');
+var mongodb   = require('mongodb');
+
+var gDbUrl;
+
+commander
+    .arguments('<db-url>')
+    .action(retrieveArguments)
+    .parse(process.argv);
+
+console.log('deploy');
+
+function retrieveArguments(dbUrl) {
+  gDbUrl = dbUrl;
+}
