@@ -10,35 +10,48 @@ const CUP_REQUIRED_POLICIES = [
   'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
 ];
 
+var gCheckOnly;
 var gDb;
 var gDbUrl;
 var gRegion;
 var gIam;
 
+commander
+    .arguments('<db-url>')
+    .option('-c, --check', 'check if IaaS and credential database are in sync and properly setup for deployment')
+    .action(retrieveArguments)
+    .parse(process.argv);
+
 console.log('\n');
 console.log('clio-up: A Command Line Utility to Deploy clio to IaaS Platforms'.green);
 console.log('================================================================'.cyan);
 
-commander
-    .arguments('<db-url>')
-    .action(retrieveArguments)
-    .parse(process.argv);
-
+saveOptions();
 checkDatabaseUrl(function() {
     connectToDatabase(function() {
       retrieveCupAdminProfileOnDb(function(cupAdmin) {
         updateAwsConfig(cupAdmin, function() {
           refreshCupUserOnAws(function() {
             ensureCupUserPolicies(function() {
-              createAccessKey(function(keyId, key) {
-                refreshCupUserProfileOnDb(keyId, key);
-              });
+              if (gCheckOnly) {
+                retrieveAccessKeyIds(function(keyId) {
+                  refreshCupUserProfileOnDb(keyId);
+                });
+              } else {
+                createAccessKey(function(keyId, key) {
+                  refreshCupUserProfileOnDb(keyId, key);
+                });
+              }
             });
           });
         });
       });
     });
   });
+
+function saveOptions() {
+  gCheckOnly = commander.check;
+}
 
 function retrieveArguments(dbUrl) {
   gDbUrl = dbUrl;
@@ -111,6 +124,7 @@ function refreshCupUserOnAws(callback) {
   gIam.getUser({UserName: 'clio-up'}, function(err, data) {
     if (err) {
       printError(err, 'AWS IAM');
+      exitIfCheckOnly();
       console.log('Creating an AWS IAM user with name \"clio-up\"...');
       gIam.createUser({UserName: 'clio-up'}, function(err, data) {
         printErrorAndDie(err, "AWS IAM");
@@ -119,7 +133,11 @@ function refreshCupUserOnAws(callback) {
       });
     } else {
       console.log(data.User.UserName + " found at " + data.User.Arn);
-      deleteAccessKeys(callback);
+      if (!gCheckOnly) {
+        deleteAccessKeys(callback);
+      } else {
+        callback();
+      }
     }
   });
 }
@@ -157,7 +175,9 @@ function ensureCupUserPolicy(index, callback) {
           'PolicyArn',
           CUP_REQUIRED_POLICIES[index],
           data.AttachedPolicies)) {
-      console.log('Missing ' + CUP_REQUIRED_POLICIES[index] + '. Attaching ...');
+      console.log('Missing ' + CUP_REQUIRED_POLICIES[index] + '.');
+      exitIfCheckOnly();
+      console.log('Attaching ...');
       gIam.attachUserPolicy({
         UserName: 'clio-up',
         PolicyArn: CUP_REQUIRED_POLICIES[index]
@@ -170,9 +190,31 @@ function ensureCupUserPolicy(index, callback) {
       if (++index < CUP_REQUIRED_POLICIES.length) {
         ensureCupUserPolicy(index);
       } else {
-        console.log('All policies verified.');
+        console.log('All required policies verified.');
         callback();
       }
+    }
+  });
+}
+
+function retrieveAccessKeyIds(callback) {
+  console.log('Retrieving access key IDs...');
+  gIam.listAccessKeys({UserName: 'clio-up'}, function(err, data) {
+    printErrorAndDie(err, 'AWS IAM');
+    var ids = data.AccessKeyMetadata;
+    switch (ids.length) {
+      case 0:
+        console.log('No access key.');
+        exitIfCheckOnly();
+        break;
+      case 1:
+        console.log('Found exactly one access key ID: ' + ids[0].AccessKeyId);
+        callback(ids[0].AccessKeyId);
+        break;
+      default:
+        console.log('More than one access key.');
+        exitIfCheckOnly();
+        break;
     }
   });
 }
@@ -189,14 +231,32 @@ function createAccessKey(callback) {
 function refreshCupUserProfileOnDb(keyId, key) {
   var profiles = gDb.collection('profiles');
   profiles.count({username: 'clio-up'}, function(err, count) {
-    if (count > 0) {
+    if (count > 1) {
+      if (gCheckOnly) {
+        console.log('More than one clio-up profile exist on credential database.');
+        exitIfCheckOnly();
+      }
       console.log('Removing (' + count + ') old clio-up from credential database...');
       profiles.deleteMany({username: 'clio-up'}, function(err, result) {
         printErrorAndDie(err, 'Database');
         console.log('Old clio-up removed.');
         refreshCupUserProfileOnDb(keyId, key);
       });
+    } else if (count === 1) {
+      profiles.findOne({username: 'clio-up'}, function(err, clioUp) {
+        printErrorAndDie(err, 'Database');
+        if (keyId === clioUp.access_key_id) {
+          console.log('IaaS user and credential database are in sync.\nReady to deploy.');
+          process.exit(0);
+        } else {
+          exitIfCheckOnly();
+        }
+      });
     } else {
+      if (gCheckOnly) {
+        console.log('No clio-up profile exists on credential database.');
+        exitIfCheckOnly();
+      }
       console.log('Uploading clio-up user profile to credential database...');
       profiles.insert({
         username: 'clio-up',
@@ -207,11 +267,18 @@ function refreshCupUserProfileOnDb(keyId, key) {
         preferred_region: gRegion
       }, function(err, result) {
         printErrorAndDie(err, 'Database');
-        console.log('clio-up user profile saved in database.');
+        console.log('clio-up user profile saved in database.\nclio-up init completed.\nReady to deploy.');
         process.exit(0);
       });
     }
   });
+}
+
+function exitIfCheckOnly() {
+  if (gCheckOnly) {
+    console.log('\nIaaS users and credential database are not in sync. Consider performing cup init <db-url>.');
+    process.exit(0);
+  }
 }
 
 function arrayContains(property, value, array) {
