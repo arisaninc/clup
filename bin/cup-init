@@ -1,0 +1,237 @@
+#!/usr/bin/env node
+
+var commander = require('commander');
+var mongodb   = require('mongodb');
+var awssdk    = require('aws-sdk');
+var colors    = require('colors');
+var url       = require('url');
+
+const CUP_REQUIRED_POLICIES = [
+  'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
+];
+
+var gDb;
+var gDbUrl;
+var gRegion;
+var gIam;
+
+console.log('\n');
+console.log('clio-up: A Command Line Utility to Deploy clio to IaaS Platforms'.green);
+console.log('================================================================'.cyan);
+
+commander
+    .arguments('<db-url>')
+    .action(retrieveArguments)
+    .parse(process.argv);
+
+checkDatabaseUrl(function() {
+    connectToDatabase(function() {
+      retrieveCupAdminProfileOnDb(function(cupAdmin) {
+        updateAwsConfig(cupAdmin, function() {
+          refreshCupUserOnAws(function() {
+            ensureCupUserPolicies(function() {
+              createAccessKey(function(keyId, key) {
+                refreshCupUserProfileOnDb(keyId, key);
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+
+function retrieveArguments(dbUrl) {
+  gDbUrl = dbUrl;
+}
+
+function checkDatabaseUrl(callback) {
+  if (typeof gDbUrl === 'undefined') {
+    console.error('\nError: Please specify credential database URL.');
+    process.exit(1);
+  }
+
+  switch (gDbUrl.indexOf('mongodb://')) {
+    case -1:
+      gDbUrl = 'mongodb://' + gDbUrl;
+      break;
+    case 0:
+      break;
+    default:
+      console.error('\nError: Invalid database URL.');
+      process.exit(1);
+      break;
+  }
+
+  callback();
+}
+
+function connectToDatabase(callback) {
+  var hostname = gDbUrl.substring(
+      gDbUrl.indexOf('@') + 1,
+      gDbUrl.indexOf(':', gDbUrl.indexOf('@')));
+  console.log('Connecting to database at ' + hostname + '...');
+  mongodb.MongoClient.connect(gDbUrl, function(err, db) {
+    printErrorAndDie(err, 'Database connection');
+    console.log('Credential database connected.');
+    gDb = db;
+    callback();
+  });
+};
+
+function retrieveCupAdminProfileOnDb(callback) {
+  gDb.collection('profiles', function(err, profiles) {
+    printErrorAndDie(err, 'Database');
+    console.log('Retrieving cup admin profile...');
+    profiles.findOne({role: 'cup-admin'}, function(err, cupAdmin) {
+      printErrorAndDie(err, 'Database');
+      if (cupAdmin) {
+        console.log('cup-admin record found on credential database.');
+        callback(cupAdmin);
+      } else {
+        console.log('cup-admin not found on credental database.');
+        process.exit(0);
+      }
+    });
+  });
+}
+
+function updateAwsConfig(cupAdmin, callback) {
+  awssdk.config.update({
+    accessKeyId    : cupAdmin.access_key_id,
+    secretAccessKey: cupAdmin.secret_access_key,
+    region         : cupAdmin.preferred_region
+  });
+  gRegion = cupAdmin.preferred_region;
+  callback();
+}
+
+function refreshCupUserOnAws(callback) {
+  console.log('Checking cup user with name \"clio-up\"...');
+  gIam = new awssdk.IAM();
+  gIam.getUser({UserName: 'clio-up'}, function(err, data) {
+    if (err) {
+      printError(err, 'AWS IAM');
+      console.log('Creating an AWS IAM user with name \"clio-up\"...');
+      gIam.createUser({UserName: 'clio-up'}, function(err, data) {
+        printErrorAndDie(err, "AWS IAM");
+        console.log(data.User.UserName + " created at " + data.User.Arn);
+        callback();
+      });
+    } else {
+      console.log(data.User.UserName + " found at " + data.User.Arn);
+      deleteAccessKeys(callback);
+    }
+  });
+}
+
+function deleteAccessKeys(callback) {
+  gIam.listAccessKeys({UserName: 'clio-up'}, function(err, data) {
+    printErrorAndDie(err, 'AWS IAM');
+    var ids = data.AccessKeyMetadata;
+    if (ids.length > 0) {
+      console.log('Deleting remaining ' + ids.length + ' access keys...');
+      gIam.deleteAccessKey({
+        UserName: 'clio-up',
+        AccessKeyId: ids[0].AccessKeyId
+      }, function(err, data) {
+        printErrorAndDie(err, 'AWS IAM');
+        console.log('Access key deleted.');
+        deleteAccessKeys(callback);
+      });
+    } else {
+      console.log('No access keys exists for clio-up.');
+      callback();
+    }
+  });
+}
+
+function ensureCupUserPolicies(callback) {
+  console.log('Verifying required policies...');
+  ensureCupUserPolicy(0, callback);
+}
+
+function ensureCupUserPolicy(index, callback) {
+  gIam.listAttachedUserPolicies({UserName: 'clio-up'}, function(err, data) {
+    printErrorAndDie(err, 'AWS IAM');
+    if (!arrayContains(
+          'PolicyArn',
+          CUP_REQUIRED_POLICIES[index],
+          data.AttachedPolicies)) {
+      console.log('Missing ' + CUP_REQUIRED_POLICIES[index] + '. Attaching ...');
+      gIam.attachUserPolicy({
+        UserName: 'clio-up',
+        PolicyArn: CUP_REQUIRED_POLICIES[index]
+      }, function(err, data) {
+        printErrorAndDie(err, 'AWS IAM');
+        ensureCupUserPolicy(index, callback);
+      });
+    } else {
+      console.log('Verified ' + CUP_REQUIRED_POLICIES[index] + '.');
+      if (++index < CUP_REQUIRED_POLICIES.length) {
+        ensureCupUserPolicy(index);
+      } else {
+        console.log('All policies verified.');
+        callback();
+      }
+    }
+  });
+}
+
+function createAccessKey(callback) {
+  console.log('Creating access key...');
+  gIam.createAccessKey({UserName: 'clio-up'}, function(err, data) {
+    printErrorAndDie(err, 'AWS IAM');
+    console.log('Access key created.');
+    callback(data.AccessKey.AccessKeyId, data.AccessKey.SecretAccessKey);
+  });
+}
+
+function refreshCupUserProfileOnDb(keyId, key) {
+  var profiles = gDb.collection('profiles');
+  profiles.count({username: 'clio-up'}, function(err, count) {
+    if (count > 0) {
+      console.log('Removing (' + count + ') old clio-up from credential database...');
+      profiles.deleteMany({username: 'clio-up'}, function(err, result) {
+        printErrorAndDie(err, 'Database');
+        console.log('Old clio-up removed.');
+        refreshCupUserProfileOnDb(keyId, key);
+      });
+    } else {
+      console.log('Uploading clio-up user profile to credential database...');
+      profiles.insert({
+        username: 'clio-up',
+        platform: 'aws',
+        role: 'cup-deployer',
+        access_key_id: keyId,
+        secret_access_key: key,
+        preferred_region: gRegion
+      }, function(err, result) {
+        printErrorAndDie(err, 'Database');
+        console.log('clio-up user profile saved in database.');
+        process.exit(0);
+      });
+    }
+  });
+}
+
+function arrayContains(property, value, array) {
+  if (!(array instanceof Array)) {
+    return false;
+  }
+  return array.filter(function(element) {
+    return element[property] === value;
+  }).length > 0;
+}
+
+function printError(error, scope) {
+  if (error) {
+    var header = scope ? scope + ' error: ' : 'Error: ';
+    console.error(header + error.message);
+  }
+}
+
+function printErrorAndDie(error, scope) {
+  printError(error, scope);
+  if (error)
+    process.exit(1);
+}
