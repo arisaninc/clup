@@ -5,6 +5,7 @@ var mongodb   = require('mongodb');
 var awssdk    = require('aws-sdk');
 var colors    = require('colors');
 var url       = require('url');
+var pkgjson   = require('../package.json');
 
 const CUP_REQUIRED_POLICIES = [
   'arn:aws:iam::aws:policy/AmazonEC2FullAccess',
@@ -23,8 +24,9 @@ commander
     .parse(process.argv);
 
 console.log('\n');
-console.log('clio-up: A Command Line Utility to Deploy clio to IaaS Platforms'.green);
-console.log('================================================================'.cyan);
+console.log('clio-up'.white.bold.inverse);
+console.log(('version: ' + pkgjson.version).yellow);
+console.log('A Command Line Utility to Deploy clio to IaaS Platforms\n'.dim);
 
 saveOptions();
 checkDatabaseUrl(function() {
@@ -246,7 +248,8 @@ function refreshCupUserProfileOnDb(keyId, key) {
       profiles.findOne({username: 'clio-up'}, function(err, clioUp) {
         printErrorAndDie(err, 'Database');
         if (keyId === clioUp.access_key_id) {
-          console.log('IaaS user and credential database are in sync.\nReady to deploy.');
+          console.log('IaaS user and credential database are in sync.');
+          console.log('Ready to deploy.'.white);
           process.exit(0);
         } else {
           exitIfCheckOnly();
@@ -267,7 +270,8 @@ function refreshCupUserProfileOnDb(keyId, key) {
         preferred_region: gRegion
       }, function(err, result) {
         printErrorAndDie(err, 'Database');
-        console.log('clio-up user profile saved in database.\nclio-up init completed.\nReady to deploy.');
+        console.log('clio-up user profile saved in database.\nclio-up init completed.');
+        console.log('Ready to deploy.'.white);
         process.exit(0);
       });
     }
@@ -276,7 +280,7 @@ function refreshCupUserProfileOnDb(keyId, key) {
 
 function exitIfCheckOnly() {
   if (gCheckOnly) {
-    console.log('\nIaaS users and credential database are not in sync. Consider performing cup init <db-url>.');
+    console.log('\nIaaS users and credential database are not in sync. Consider performing cup init <db-url>.'.red);
     process.exit(0);
   }
 }
@@ -293,7 +297,7 @@ function arrayContains(property, value, array) {
 function printError(error, scope) {
   if (error) {
     var header = scope ? scope + ' error: ' : 'Error: ';
-    console.error(header + error.message);
+    console.error((header + error.message).red);
   }
 }
 
