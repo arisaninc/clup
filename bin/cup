@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
-var app = require('commander');
-app
-  .command('init <db_url>',
+var commander = require('commander');
+
+commander
+  .command('init <db-url>',
            'initialize clio-up with IaaS credentials from database')
   .parse(process.argv);
